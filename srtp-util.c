@@ -50,7 +50,7 @@ static void decode_sdes(unsigned char *in,
 }
 
 static srtp_session_t *s = NULL;
-static int is_srtp_encrypt = 0;
+static int is_srtp_encrypt = 1;
 
 static void hexdump(const void *ptr, size_t size) {
   int i, j;
@@ -69,16 +69,17 @@ static int rtp_offset = -1;
 static int frame_nr = -1;
 static int processed_packets = 0;
 static struct timeval start_tv = {0, 0};
+FILE *pcapFp = NULL;
 
-
-static void process_rtp(u_char *arg, const struct pcap_pkthdr *hdr,
-  const u_char *bytes) {
+static void process_rtp(u_char *arg, const struct pcap_pkthdr *hdr, const u_char *bytes) {
   unsigned char buffer[2048];
   size_t pktsize;
   int ret;
   struct timeval delta;
 
   frame_nr += 1;
+
+  hexdump(bytes, hdr->caplen);
 
   if (hdr->caplen < rtp_offset) {
     fprintf(stderr, "frame %d dropped: too short\n", frame_nr);
@@ -114,8 +115,13 @@ static void process_rtp(u_char *arg, const struct pcap_pkthdr *hdr,
   timersub(&hdr->ts, &start_tv, &delta);
   printf("%02ld:%02ld.%06lu\n", delta.tv_sec/60, delta.tv_sec%60, delta.tv_usec);
 
-  hexdump(buffer, pktsize);
+  // hexdump(buffer, pktsize);
+  memset(bytes + rtp_offset, 0, hdr->caplen - rtp_offset);
+  memcpy(bytes + rtp_offset, buffer, pktsize);
+  hdr->caplen = pktsize + rtp_offset;
+  fwrite (&hdr, 1, sizeof(pcaprec_hdr_t) , pcapFp);
 
+  exit(0);
 }
 
 static void usage(const char *arg0) {
@@ -125,13 +131,18 @@ static void usage(const char *arg0) {
 
 int main(int argc, char **argv) {
   unsigned char key[16], salt[14];
-  int c;
   char errbuf[PCAP_ERRBUF_SIZE];
   pcap_t *pcap;
-  unsigned char *sdes = NULL;
   int taglen = 10;
   struct bpf_program pcap_filter;
 
+  if(argc != 3) {
+    usage(argv[0]);
+    return -1;
+  }
+
+  unsigned char *sdes = (unsigned char*)argv[1];
+/*
   while ((c = getopt(argc, argv, "k:d:t:E")) != -1) {
     switch (c) {
     case 'k':
@@ -154,6 +165,7 @@ int main(int argc, char **argv) {
   if (sdes == NULL) {
     usage(argv[0]);
   }
+*/
 
   decode_sdes(sdes, key, salt);
 
@@ -162,7 +174,7 @@ int main(int argc, char **argv) {
   assert(s != NULL);
   srtp_setkey(s, key, sizeof(key), salt, sizeof(salt));
 
-  pcap = pcap_open_offline("-", errbuf);
+  pcap = pcap_open_offline(argv[2], errbuf);
   if (!pcap) {
     fprintf(stderr, "libpcap failed to open file '%s'\n", errbuf);
     exit(1);
@@ -182,7 +194,9 @@ int main(int argc, char **argv) {
     }  
   }
 
+  pcapFp = fopen ("myfile.pcap" , "wb");
   pcap_loop(pcap, 0, process_rtp, NULL);
+  fclose(pcapFp);
 
   srtp_destroy(s);
 
