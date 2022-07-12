@@ -11,6 +11,7 @@
 #include "srtp.h"
 
 #include <pcap.h>
+pcap_dumper_t *dumper = NULL;
 
 static const char b64chars[] = 
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -53,6 +54,8 @@ static srtp_session_t *s = NULL;
 static int is_srtp_encrypt = 1;
 
 static void hexdump(const void *ptr, size_t size) {
+
+  return;
   int i, j;
   const unsigned char *cptr = ptr;
 
@@ -69,23 +72,23 @@ static int rtp_offset = -1;
 static int frame_nr = -1;
 static int processed_packets = 0;
 static struct timeval start_tv = {0, 0};
-FILE *pcapFp = NULL;
 
 static void process_rtp(u_char *arg, const struct pcap_pkthdr *hdr, const u_char *bytes) {
   unsigned char buffer[2048];
+  u_char copy_bytes[2048] = {0};
   size_t pktsize;
   int ret;
   struct timeval delta;
 
   frame_nr += 1;
 
-  hexdump(bytes, hdr->caplen);
-
   if (hdr->caplen < rtp_offset) {
     fprintf(stderr, "frame %d dropped: too short\n", frame_nr);
     return;
   }
 
+  memcpy(copy_bytes, bytes, hdr->caplen);
+  hexdump(copy_bytes, hdr->caplen);
   memcpy(buffer, bytes + rtp_offset, hdr->caplen - rtp_offset);
   pktsize = hdr->caplen - rtp_offset;
 
@@ -113,15 +116,16 @@ static void process_rtp(u_char *arg, const struct pcap_pkthdr *hdr, const u_char
   processed_packets++;
 
   timersub(&hdr->ts, &start_tv, &delta);
-  printf("%02ld:%02ld.%06lu\n", delta.tv_sec/60, delta.tv_sec%60, delta.tv_usec);
+  // printf("%02ld:%02ld.%06lu\n", delta.tv_sec/60, delta.tv_sec%60, delta.tv_usec);
 
-  // hexdump(buffer, pktsize);
-  memset(bytes + rtp_offset, 0, hdr->caplen - rtp_offset);
-  memcpy(bytes + rtp_offset, buffer, pktsize);
-  hdr->caplen = pktsize + rtp_offset;
-  fwrite (&hdr, 1, sizeof(pcaprec_hdr_t) , pcapFp);
+  memset(copy_bytes + rtp_offset, 0, hdr->caplen - rtp_offset);
+  memcpy(copy_bytes + rtp_offset, buffer, pktsize);
+  hexdump(copy_bytes, rtp_offset + pktsize);
 
-  exit(0);
+  struct pcap_pkthdr pcap_hdr;
+  pcap_hdr.caplen = rtp_offset + pktsize;
+  pcap_hdr.len = pcap_hdr.caplen;
+  pcap_dump((u_char *)dumper, &pcap_hdr, copy_bytes);
 }
 
 static void usage(const char *arg0) {
@@ -194,9 +198,11 @@ int main(int argc, char **argv) {
     }  
   }
 
-  pcapFp = fopen ("myfile.pcap" , "wb");
+
+  pcap_t *handle = pcap_open_dead(DLT_EN10MB, 1 << 16);
+  dumper = pcap_dump_open(handle, "cap.pcap");
   pcap_loop(pcap, 0, process_rtp, NULL);
-  fclose(pcapFp);
+  pcap_dump_close(dumper);
 
   srtp_destroy(s);
 
